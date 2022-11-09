@@ -1,0 +1,113 @@
+wget https://hiveassignmentdatabde.s3.amazonaws.com/Parking_Violations_Issued_-_Fiscal_Year_2017.csv;
+#create database
+create database if not exists Assignment ;
+
+#use
+use Assignment;
+
+# create table
+create external table if not exists violation(Summons_number bigint,Plate_ID string,Registration_State string,Plate_Type string,Issue_Date string,Violation_Code int,Vehicle_Body_Type string,Vehicle_Make string,Issuing_Agency string,Street_Code1 int,Street_Code2 int,Street_Code3 int,Vehicle_Expiration_Date int,Violation_Location string,Violation_Precinct int,Issuer_Precinct int,Issuer_Code int,Issuer_Command string,Issuer_Squad string,Violation_Time string,Time_First_Observed string,Violation_County string,Violation_In_Front_Of_Or_Opposite string,House_int string,Street_Name string,Intersecting_Street string,Date_First_Observed int,Law_Section int,Sub_Division string,Violation_Legal_Code string,Days_Parking_In_Effect string,From_Hours_In_Effect string,To_Hours_In_Effect string,Vehicle_Color string,Unregistered_Vehicle string,Vehicle_Year int,Meter_int string,Feet_From_Curb int,Violation_Post_Code string,Violation_Description string,No_Standing_or_Stopping_Violation string,Hydrant_Violation string,Double_Parking_Violation string) row format delimited fields terminated by ',' lines terminated by '\n' stored as textfile tblproperties ("skip.header.line.count"="1");
+
+#load data
+load data local inpath '/home/hadoop/Parking_Violations_Issued_-_Fiscal_Year_2017.csv' into table violation ;
+
+#give header to table
+set hive.cli.print.header = true;
+
+#create partition table
+create external table if not exists violation_part(Summons_number bigint,Plate_ID string,Registration_State string,Plate_Type string,Issue_Date string,Violation_Code int,Vehicle_Body_Type string,Vehicle_Make string,Issuing_Agency string,Street_Code1 int,Street_Code2 int,Street_Code3 int,Vehicle_Expiration_Date int,Violation_Location string,Violation_Precinct int,Issuer_Precinct int,Issuer_Code int,Issuer_Command string,Issuer_Squad string,Violation_Time string,Time_First_Observed string,Violation_County string,Violation_In_Front_Of_Or_Opposite string,House_int string,Street_Name string,Intersecting_Street string,Date_First_Observed int,Law_Section int,Sub_Division string,Violation_Legal_Code string,Days_Parking_In_Effect string,From_Hours_In_Effect string,To_Hours_In_Effect string,Vehicle_Color string,Unregistered_Vehicle string,Vehicle_Year int,Meter_int string,Feet_From_Curb int,Violation_Post_Code string,Violation_Description string,No_Standing_or_Stopping_Violation string,Hydrant_Violation string,Double_Parking_Violation string)partitioned by(month string) row format delimited fields terminated by ',' lines terminated by '\n' stored as textfile tblproperties("orc.compress"="SNAPPY");
+
+# activate the dynamic partition
+set hive.exec.dynamic.partition = true;
+set hive.exec.dynamic.partition.mode = nonstrict;
+
+#create partition
+insert overwrite table violation_part partition(month) select *,concat(substr(Issue_Date,7,4),substr(Issue_Date,1,2)) as month from violation where (Issue_Date like '%2017');
+
+#1.1 
+with year_cte as(select substr(Issue_Date,7,4) as year from violation_part)select year, count(*) from year_cte group by year order by year;
+
+#1.2
+select count(distinct Registration_State)
+from violation_part;
+
+#1.3
+select count(*)
+from violation_part
+where Street_Code1 is null
+or Street_Code2 is null
+or Street_Code3 is null;
+
+#2.1
+select HOUR(FROM_UNIXTIME(UNIX_TIMESTAMP(concat(Issue_Date,' ',Violation_Time,'m'),'mm/dd/yyyy hhmma')))
+from violation_part
+group by HOUR
+order by HOUR;
+
+#2.2
+with vio_cte as 
+(select round(HOUR(FROM_UNIXTIME(UNIX_TIMESTAMP(concat(Issue_Date,' ',Violation_Time,'m'),'mm/dd/yyyy hhmma')))/4) as time,Violation_Code as vc
+from violation_part)
+select time, vc,n_violations,vc_rank
+from(
+select time, vc,count(*) as n_violations,rank() OVER(Partition by time order by count(*) desc) as vc_rank
+from vio_cte
+group by time,vc) as x
+where vc_rank < 4;
+
+#2.3
+with vio_cte as 
+(select round(HOUR(FROM_UNIXTIME(UNIX_TIMESTAMP(concat(Issue_Date,' ',Violation_Time,'m'),'mm/dd/yyyy hhmma')))/4) as time_period ,Violation_Code as vc
+from violation_part)
+select *
+from
+(select a.vc, time_period, rank() over(partition by a.vc order by sum(time_period) desc) as vc_time_period_rank from 
+( select Violation_Code as vc , rank() over(partition by null order by count(*) desc) as rc_rank
+from violation_part
+group by Violation_Code) a
+left outer join
+(select time_period , vc,
+count(*) as rc_time_period_count
+from vio_cte
+group by time_period,vc) b 
+on (a.vc = b.vc)
+where rc_rank < 4
+group by a.vc, time_period
+) c
+where vc_time_period_rank < 4;
+
+
+#2.4.1
+select case
+when substr(Issue_Date,1,2) in ('03','04','05') then 'spring'
+when substr(Issue_Date,1,2) in ('06','07','08') then 'summer'
+when substr(Issue_Date,1,2) in ('09','10','11') then 'fall'
+when substr(Issue_Date,1,2) in ('12','01','02') then 'winter'
+end as season, count(*)
+from violation_part
+group by case
+when substr(Issue_Date,1,2) in ('03','04','05') then 'spring'
+when substr(Issue_Date,1,2) in ('06','07','08') then 'summer'
+when substr(Issue_Date,1,2) in ('09','10','11') then 'fall'
+when substr(Issue_Date,1,2) in ('12','01','02') then 'winter'
+end;
+
+#2.4.2
+select * from 
+(select *, rank() over(partition by season order by vc_count desc) as vc_rank
+from( select case
+when substr(Issue_Date,1,2) in ('03','04','05') then 'spring'
+when substr(Issue_Date,1,2) in ('06','07','08') then 'summer'
+when substr(Issue_Date,1,2) in ('09','10','11') then 'fall'
+when substr(Issue_Date,1,2) in ('12','01','02') then 'winter'
+end as season,Violation_Code, count(*) as vc_count
+from violation_part
+group by case
+when substr(Issue_Date,1,2) in ('03','04','05') then 'spring'
+when substr(Issue_Date,1,2) in ('06','07','08') then 'summer'
+when substr(Issue_Date,1,2) in ('09','10','11') then 'fall'
+when substr(Issue_Date,1,2) in ('12','01','02') then 'winter'
+end, Violation_code
+) a 
+) b
+where vc_rank < 4;
